@@ -108,7 +108,12 @@ subst x m (Var y)
   | otherwise = Var y
 subst x m (Lam y n) = Lam y (substUnder x m y n)
 subst x m (App n1 n2) = App (subst x m n1) (subst x m n2)
-subst x m n = undefined
+subst x m (Store n) = Store (subst x m n)
+subst _ _ Recall = Recall
+subst x m (Throw n) = Throw (subst x m n)
+subst x m (Catch n y p) 
+  | x == y    = Catch (subst x m n) y p -- Shadowing: Don't substitute in p
+  | otherwise = Catch (subst x m n) y (subst x m p)
 
 {-------------------------------------------------------------------------------
 
@@ -202,7 +207,65 @@ bubble; this won't *just* be `Throw` and `Catch.
 -------------------------------------------------------------------------------}
 
 smallStep :: (Expr, Expr) -> Maybe (Expr, Expr)
-smallStep = undefined
+-- Constants do not reduce further
+smallStep (Const i, acc) = Nothing
+-- Arithmetic Plus: evaluate left-to-right
+smallStep (Plus m n, acc)
+  | not (isValue m) = case smallStep (m, acc) of
+      Just (m', acc') -> Just (Plus m' n, acc')
+      Nothing -> Nothing
+  | not (isValue n) = case smallStep (n, acc) of
+      Just (n', acc') -> Just (Plus m n', acc')
+      Nothing -> Nothing
+  | otherwise = Just (Const (v1 + v2), acc)
+  where
+    Const v1 = m
+    Const v2 = n
+-- Variables do not reduce further
+smallStep (Var _, _) = Nothing
+-- Lambda expressions are values
+smallStep (Lam x e, acc) = Nothing
+-- Application: evaluate left-to-right, then substitute
+smallStep (App m n, acc)
+  | not (isValue m) = case smallStep (m, acc) of
+      Just (m', acc') -> Just (App m' n, acc')
+      Nothing -> Nothing
+  | not (isValue n) = case smallStep (n, acc) of
+      Just (n', acc') -> Just (App m n', acc')
+      Nothing -> Nothing
+  | otherwise = case m of
+      Lam x m' -> Just (subst x n m', acc)
+      _ -> Nothing
+-- Store: evaluate the expression and update the accumulator
+smallStep (Store m, acc)
+  | not (isValue m) = case smallStep (m, acc) of
+      Just (m', acc') -> Just (Store m', acc')
+      Nothing -> Nothing
+  | otherwise = Just (Const v, m)
+  where
+    Const v = m
+-- Recall: retrieve the current accumulator value
+smallStep (Recall, acc) = Just (acc, acc)
+-- Throw: evaluate the exception payload
+smallStep (Throw m, acc)
+  | not (isValue m) = case smallStep (m, acc) of
+      Just (m', acc') -> Just (Throw m', acc')
+      Nothing -> Nothing
+  | otherwise = Just (Throw m, acc)
+-- Catch: handle exceptions
+smallStep (Catch m y n, acc)
+  | not (isValue m) && not (isThrow m) = case smallStep (m, acc) of
+      Just (m', acc') -> Just (Catch m' y n, acc')
+      Nothing -> Nothing
+  | isValue m = Just (m, acc)
+  | isThrow m = case m of
+      Throw w -> Just (subst y w n, acc)
+      _ -> Nothing
+  where
+    isThrow (Throw _) = True
+    isThrow _ = False
+-- Default case: no reduction possible
+smallStep (_, _) = Nothing
 
 steps :: (Expr, Expr) -> [(Expr, Expr)]
 steps s = case smallStep s of
